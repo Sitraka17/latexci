@@ -56,10 +56,14 @@ func (c *Config) applyDefaults() {
 }
 
 func Scaffold(path string) error {
+	return ScaffoldWithEngine(path, "pdflatex")
+}
+
+func ScaffoldWithEngine(path, engine string) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("%q already exists", path)
 	}
-	content := `engine: pdflatex        # pdflatex | xelatex | lualatex
+	content := fmt.Sprintf(`engine: %s        # pdflatex | xelatex | lualatex
 main: main.tex          # LaTeX entry point
 output_dir: build/
 runs: 2                 # compilation passes (for TOC, refs)
@@ -68,7 +72,7 @@ draft: false
 fail_on_warning: false
 artifacts:
   - build/*.pdf
-`
+`, engine)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("writing %q: %w", path, err)
 	}

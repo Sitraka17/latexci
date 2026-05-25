@@ -115,9 +115,26 @@ func (r *Report) GitHubSummary() string {
 	return sb.String()
 }
 
-func colorRed(s string) string    { return "\033[31m" + s + "\033[0m" }
-func colorGreen(s string) string  { return "\033[32m" + s + "\033[0m" }
-func colorYellow(s string) string { return "\033[33m" + s + "\033[0m" }
+func noColor() bool { return os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" }
+
+func colorRed(s string) string {
+	if noColor() {
+		return s
+	}
+	return "\033[31m" + s + "\033[0m"
+}
+func colorGreen(s string) string {
+	if noColor() {
+		return s
+	}
+	return "\033[32m" + s + "\033[0m"
+}
+func colorYellow(s string) string {
+	if noColor() {
+		return s
+	}
+	return "\033[33m" + s + "\033[0m"
+}
 
 func countColored(n int, color func(string) string) string {
 	s := fmt.Sprintf("%d", n)

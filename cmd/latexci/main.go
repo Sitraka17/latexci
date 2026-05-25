@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -15,17 +17,21 @@ import (
 	"github.com/sitrakaforler/latexci/internal/watcher"
 )
 
+// Set via -ldflags at build time.
+var version = "dev"
+
 var (
-	cfgFile      string
-	reportFlag   bool
-	verboseFlag  bool
+	cfgFile     string
+	reportFlag  bool
+	verboseFlag bool
 )
 
 func main() {
 	root := &cobra.Command{
-		Use:   "latexci",
-		Short: "Minimalist CI/CD pipeline for LaTeX projects",
-		Long:  "latexci compiles LaTeX projects with structured error reporting and GitHub Actions support.",
+		Use:     "latexci",
+		Short:   "Minimalist CI/CD pipeline for LaTeX projects",
+		Long:    "latexci compiles LaTeX projects with structured error reporting and GitHub Actions support.",
+		Version: version,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			level := slog.LevelInfo
 			if verboseFlag {
@@ -43,6 +49,8 @@ func main() {
 		watchCmd(),
 		cleanCmd(),
 		initCmd(),
+		newCmd(),
+		openCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -102,8 +110,6 @@ func runBuild(cfg *config.Config) (*report.Report, int) {
 	case rep.Errors > 0:
 		return rep, 1
 	case rep.Warnings > 0 && cfg.FailOnWarning:
-		return rep, 2
-	case rep.Warnings > 0:
 		return rep, 2
 	default:
 		return rep, 0
@@ -188,9 +194,114 @@ func initCmd() *cobra.Command {
 				return err
 			}
 			fmt.Printf("created %s\n", config.DefaultConfigFile)
+			fmt.Println("tip: run 'latexci new' to also create a starter main.tex")
 			return nil
 		},
 	}
+}
+
+// ---------- new ----------
+
+func newCmd() *cobra.Command {
+	var engine string
+	cmd := &cobra.Command{
+		Use:   "new [directory]",
+		Short: "Scaffold a complete LaTeX project (main.tex + .latexci.yml)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir := "."
+			if len(args) == 1 {
+				dir = args[0]
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					return fmt.Errorf("creating directory %q: %w", dir, err)
+				}
+			}
+
+			cfgPath := filepath.Join(dir, config.DefaultConfigFile)
+			if err := config.ScaffoldWithEngine(cfgPath, engine); err != nil {
+				return err
+			}
+
+			texPath := filepath.Join(dir, "main.tex")
+			if _, err := os.Stat(texPath); err == nil {
+				fmt.Printf("  exists   %s (skipped)\n", texPath)
+			} else {
+				if err := os.WriteFile(texPath, []byte(starterTeX(engine)), 0o644); err != nil {
+					return fmt.Errorf("writing %s: %w", texPath, err)
+				}
+				fmt.Printf("  created  %s\n", texPath)
+			}
+			fmt.Printf("  created  %s\n", cfgPath)
+			fmt.Printf("\nready — run: latexci build\n")
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&engine, "engine", "e", "pdflatex", "LaTeX engine: pdflatex | xelatex | lualatex")
+	return cmd
+}
+
+func starterTeX(engine string) string {
+	fontPkg := ""
+	if engine == "xelatex" || engine == "lualatex" {
+		fontPkg = "\n\\usepackage{fontspec}"
+	}
+	return fmt.Sprintf(`\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}%s
+\usepackage{hyperref}
+
+\title{My Document}
+\author{Author}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+Hello, \LaTeX!
+
+\end{document}
+`, fontPkg)
+}
+
+// ---------- open ----------
+
+func openCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "open",
+		Short: "Open the compiled PDF with the system viewer",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			pdf := compiler.OutputPath(cfg)
+			if _, err := os.Stat(pdf); err != nil {
+				return fmt.Errorf("PDF not found at %q — run 'latexci build' first", pdf)
+			}
+			return openPDF(pdf)
+		},
+	}
+}
+
+func openPDF(path string) error {
+	var openCmd string
+	switch runtime.GOOS {
+	case "darwin":
+		openCmd = "open"
+	case "linux":
+		openCmd = "xdg-open"
+	case "windows":
+		openCmd = "start"
+	default:
+		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+	}
+	cmd := exec.Command(openCmd, path)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // ---------- helpers ----------
