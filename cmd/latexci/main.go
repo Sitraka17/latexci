@@ -28,10 +28,11 @@ var (
 
 func main() {
 	root := &cobra.Command{
-		Use:     "latexci",
-		Short:   "Minimalist CI/CD pipeline for LaTeX projects",
-		Long:    "latexci compiles LaTeX projects with structured error reporting and GitHub Actions support.",
-		Version: version,
+		Use:          "latexci",
+		Short:        "Minimalist CI/CD pipeline for LaTeX projects",
+		Long:         "latexci compiles LaTeX projects with structured error reporting and GitHub Actions support.",
+		Version:      version,
+		SilenceUsage: true, // don't print usage on runtime errors
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			level := slog.LevelInfo
 			if verboseFlag {
@@ -51,6 +52,7 @@ func main() {
 		initCmd(),
 		newCmd(),
 		openCmd(),
+		doctorCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -302,6 +304,143 @@ func openPDF(path string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// ---------- doctor ----------
+
+type checkResult struct {
+	label  string
+	ok     bool
+	detail string
+}
+
+func doctorCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor",
+		Short: "Check that your environment is ready to compile LaTeX",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, _ := loadConfig()
+			checks := runDoctor(cfg)
+
+			allOK := true
+			for _, c := range checks {
+				icon := "✓"
+				if !c.ok {
+					icon = "✗"
+					allOK = false
+				}
+				colored := colorCheck(icon, c.ok)
+				if c.detail != "" {
+					fmt.Printf("  %s  %-30s %s\n", colored, c.label, c.detail)
+				} else {
+					fmt.Printf("  %s  %s\n", colored, c.label)
+				}
+			}
+			fmt.Println()
+			if allOK {
+				fmt.Println(colorCheckGreen("All checks passed — ready to compile."))
+			} else {
+				fmt.Println(colorCheckRed("Some checks failed. Fix the issues above, then run 'latexci build'."))
+				return fmt.Errorf("environment not ready")
+			}
+			return nil
+		},
+	}
+}
+
+func runDoctor(cfg *config.Config) []checkResult {
+	var results []checkResult
+
+	add := func(label string, ok bool, detail string) {
+		results = append(results, checkResult{label, ok, detail})
+	}
+
+	// 1. Config file
+	_, cfgErr := os.Stat(cfgFile)
+	if cfgErr == nil {
+		add(".latexci.yml present", true, cfgFile)
+	} else {
+		add(".latexci.yml present", false, "run 'latexci init' to create one")
+	}
+
+	// 2. Main .tex file
+	_, texErr := os.Stat(cfg.Main)
+	if texErr == nil {
+		add("main file exists", true, cfg.Main)
+	} else {
+		add("main file exists", false, fmt.Sprintf("%q not found — run 'latexci new'", cfg.Main))
+	}
+
+	// 3. LaTeX engine
+	engines := []string{cfg.Engine, "pdflatex", "xelatex", "lualatex"}
+	seen := map[string]bool{}
+	for _, e := range engines {
+		if seen[e] {
+			continue
+		}
+		seen[e] = true
+		if p, err := exec.LookPath(e); err == nil {
+			add(fmt.Sprintf("engine %s", e), true, p)
+		} else {
+			add(fmt.Sprintf("engine %s", e), false, "not found in PATH")
+		}
+	}
+
+	// 4. biber / bibtex (only if bibliography enabled)
+	if cfg.Bibliography {
+		if p, err := exec.LookPath("biber"); err == nil {
+			add("biber (bibliography)", true, p)
+		} else if p, err := exec.LookPath("bibtex"); err == nil {
+			add("bibtex (bibliography)", true, p)
+		} else {
+			add("biber/bibtex (bibliography)", false, "install texlive-bibtex-extra or biber")
+		}
+	}
+
+	// 5. Output dir writable
+	outDir := cfg.OutputDir
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		add("output dir writable", false, fmt.Sprintf("cannot create %q: %v", outDir, err))
+	} else {
+		add("output dir writable", true, outDir)
+	}
+
+	// 6. Disk space (warn if < 100 MB free in current dir)
+	if free, err := diskFreeBytes("."); err == nil {
+		mb := free / 1024 / 1024
+		if mb < 100 {
+			add("disk space", false, fmt.Sprintf("only %d MB free — LaTeX build artifacts can be large", mb))
+		} else {
+			add("disk space", true, fmt.Sprintf("%d MB free", mb))
+		}
+	}
+
+	return results
+}
+
+func colorCheck(icon string, ok bool) string {
+	noColor := os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb"
+	if noColor {
+		return icon
+	}
+	if ok {
+		return "\033[32m" + icon + "\033[0m"
+	}
+	return "\033[31m" + icon + "\033[0m"
+}
+
+func colorCheckGreen(s string) string {
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+		return s
+	}
+	return "\033[32m" + s + "\033[0m"
+}
+
+func colorCheckRed(s string) string {
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+		return s
+	}
+	return "\033[31m" + s + "\033[0m"
 }
 
 // ---------- helpers ----------
