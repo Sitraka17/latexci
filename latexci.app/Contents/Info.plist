@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>latexci</string>
+  <key>CFBundleDisplayName</key>
+  <string>latexci</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.sitraka17.latexci</string>
+  <key>CFBundleVersion</key>
+  <string>0.3.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.3.0</string>
+  <key>CFBundleExecutable</key>
+  <string>latexci-launcher</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleSignature</key>
+  <string>????</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>LSUIElement</key>
+  <false/>
+  <key>NSAppleScriptEnabled</key>
+  <true/>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+</dict>
+</plist>

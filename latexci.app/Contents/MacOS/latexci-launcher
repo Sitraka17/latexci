@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# latexci macOS launcher
+# Finds the latexci binary, picks a project folder, runs doctor + build.
+
+set -euo pipefail
+
+# ── 1. Locate the latexci binary ─────────────────────────────────────────────
+LATEXCI=""
+for candidate in \
+    "$HOME/latexci/bin/latexci" \
+    "$HOME/go/bin/latexci" \
+    "/usr/local/bin/latexci" \
+    "/opt/homebrew/bin/latexci"; do
+  if [[ -x "$candidate" ]]; then
+    LATEXCI="$candidate"
+    break
+  fi
+done
+
+# Also search PATH (handles `go install` scenarios)
+if [[ -z "$LATEXCI" ]]; then
+  LATEXCI=$(command -v latexci 2>/dev/null || true)
+fi
+
+if [[ -z "$LATEXCI" ]]; then
+  osascript <<'APPLESCRIPT'
+    display alert "latexci not found" message \
+      "Could not find the latexci binary.\n\nInstall it with:\n  go install github.com/Sitraka17/latexci/cmd/latexci@latest\n\nor copy the binary to ~/latexci/bin/latexci" \
+      as critical buttons {"OK"} default button "OK"
+APPLESCRIPT
+  exit 1
+fi
+
+# ── 2. Choose project folder ──────────────────────────────────────────────────
+PROJECT=$(osascript <<'APPLESCRIPT'
+  set chosen to choose folder with prompt "Select your LaTeX project folder:"
+  return POSIX path of chosen
+APPLESCRIPT
+) || exit 0   # user pressed Cancel
+
+PROJECT="${PROJECT%/}"   # strip trailing slash
+
+# ── 3. Run doctor + build inside a Terminal window ───────────────────────────
+LOG_FILE=$(mktemp /tmp/latexci-XXXXXX.log)
+LATEXCI_ESC="${LATEXCI//\'/\'\\\'\'}"   # escape single quotes for AppleScript
+PROJECT_ESC="${PROJECT//\'/\'\\\'\'}"
+
+osascript <<APPLESCRIPT
+tell application "Terminal"
+  activate
+  set w to do script "
+clear
+echo '\\033[36m━━━ latexci ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m'
+echo '📂 Project: ${PROJECT_ESC}'
+echo ''
+echo '\\033[33m[1/2] Checking environment...\\033[0m'
+'${LATEXCI_ESC}' doctor --config '${PROJECT_ESC}/.latexci.yml' 2>&1
+DOCTOR_EXIT=\\\$?
+echo ''
+if [ \\\$DOCTOR_EXIT -ne 0 ]; then
+  echo '\\033[31mFix the issues above, then reopen latexci.\\033[0m'
+  exit 1
+fi
+echo '\\033[33m[2/2] Building...\\033[0m'
+cd '${PROJECT_ESC}'
+'${LATEXCI_ESC}' build --report 2>&1
+BUILD_EXIT=\\\$?
+echo ''
+if [ \\\$BUILD_EXIT -eq 0 ]; then
+  echo '\\033[32m✓ Build successful!\\033[0m'
+  echo \\\$BUILD_EXIT > '${LOG_FILE}'
+else
+  echo '\\033[31m✗ Build failed (exit \\\$BUILD_EXIT)\\033[0m'
+  echo \\\$BUILD_EXIT > '${LOG_FILE}'
+fi
+"
+end tell
+APPLESCRIPT
+
+# ── 4. Wait for build to finish and show macOS notification ──────────────────
+# Poll for the log file (max 5 minutes)
+for i in $(seq 1 300); do
+  if [[ -s "$LOG_FILE" ]]; then
+    BUILD_EXIT=$(cat "$LOG_FILE")
+    rm -f "$LOG_FILE"
+    if [[ "$BUILD_EXIT" == "0" ]]; then
+      osascript -e "display notification \"PDF compiled successfully ✓\" with title \"latexci\" subtitle \"$(basename "$PROJECT")\" sound name \"Glass\""
+    else
+      osascript -e "display notification \"Build failed — check Terminal for details\" with title \"latexci\" subtitle \"$(basename "$PROJECT")\" sound name \"Basso\""
+    fi
+    break
+  fi
+  sleep 1
+done
