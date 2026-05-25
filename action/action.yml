@@ -1,0 +1,110 @@
+name: 'latexci'
+description: 'Compile LaTeX projects with structured error reporting'
+author: 'latexci'
+
+branding:
+  icon: 'file-text'
+  color: 'blue'
+
+inputs:
+  engine:
+    description: 'LaTeX engine: pdflatex | xelatex | lualatex'
+    required: false
+    default: 'pdflatex'
+  main-file:
+    description: 'Entry-point .tex file'
+    required: false
+    default: 'main.tex'
+  output-dir:
+    description: 'Output directory for generated files'
+    required: false
+    default: 'build'
+  runs:
+    description: 'Number of compilation passes'
+    required: false
+    default: '2'
+  fail-on-warning:
+    description: 'Exit with code 2 when warnings are present'
+    required: false
+    default: 'false'
+  bibliography:
+    description: 'Run bibtex/biber after the first pass'
+    required: false
+    default: 'false'
+  latexci-version:
+    description: 'latexci release tag to install (default: latest)'
+    required: false
+    default: 'latest'
+
+outputs:
+  pdf-path:
+    description: 'Path to the compiled PDF'
+    value: ${{ steps.build.outputs.pdf-path }}
+  report-path:
+    description: 'Path to the JSON build report'
+    value: ${{ steps.build.outputs.report-path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install TeX Live
+      shell: bash
+      run: |
+        if ! command -v pdflatex &>/dev/null; then
+          echo "::group::Installing TeX Live"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends texlive-full
+          echo "::endgroup::"
+        else
+          echo "TeX Live already present: $(pdflatex --version | head -1)"
+        fi
+
+    - name: Install latexci
+      shell: bash
+      run: |
+        VERSION="${{ inputs.latexci-version }}"
+        if [ "$VERSION" = "latest" ]; then
+          VERSION=$(curl -s https://api.github.com/repos/sitrakaforler/latexci/releases/latest \
+            | grep '"tag_name"' | cut -d'"' -f4)
+        fi
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+        URL="https://github.com/sitrakaforler/latexci/releases/download/${VERSION}/latexci_${OS}_${ARCH}.tar.gz"
+        echo "Installing latexci ${VERSION} from ${URL}"
+        curl -fsSL "$URL" | tar -xz latexci
+        sudo mv latexci /usr/local/bin/latexci
+        latexci --version
+
+    - name: Build
+      id: build
+      shell: bash
+      run: |
+        latexci build \
+          --config .latexci.yml \
+          --report
+        PDF_PATH="${{ inputs.output-dir }}/$(basename ${{ inputs.main-file }} .tex).pdf"
+        echo "pdf-path=${PDF_PATH}" >> "$GITHUB_OUTPUT"
+        echo "report-path=latexci-report.json" >> "$GITHUB_OUTPUT"
+      env:
+        LATEXCI_ENGINE: ${{ inputs.engine }}
+        LATEXCI_MAIN: ${{ inputs.main-file }}
+        LATEXCI_OUTPUT_DIR: ${{ inputs.output-dir }}
+        LATEXCI_RUNS: ${{ inputs.runs }}
+        LATEXCI_FAIL_ON_WARNING: ${{ inputs.fail-on-warning }}
+        LATEXCI_BIBLIOGRAPHY: ${{ inputs.bibliography }}
+
+    - name: Upload PDF artifact
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: pdf-output
+        path: ${{ inputs.output-dir }}/*.pdf
+        if-no-files-found: warn
+
+    - name: Upload build report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: latexci-report
+        path: latexci-report.json
+        if-no-files-found: ignore

@@ -1,0 +1,12 @@
+bin/
+dist/
+latexci-report.json
+build/
+*.pdf
+*.aux
+*.log
+*.toc
+*.out
+*.bbl
+*.blg
+.DS_Store

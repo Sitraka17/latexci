@@ -1,0 +1,66 @@
+version: 2
+
+project_name: latexci
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+
+builds:
+  - id: latexci
+    main: ./cmd/latexci
+    binary: latexci
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE
+      - .latexci.yml
+      - action/action.yml
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - Merge pull request
+      - Merge branch
+
+brews:
+  - name: latexci
+    homepage: "https://github.com/sitrakaforler/latexci"
+    description: "Minimalist CI/CD pipeline for LaTeX projects"
+    license: "MIT"
+    repository:
+      owner: sitrakaforler
+      name: homebrew-tap
+
+release:
+  github:
+    owner: sitrakaforler
+    name: latexci
+  draft: false
+  prerelease: auto

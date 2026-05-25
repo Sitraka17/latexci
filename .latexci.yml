@@ -1,0 +1,9 @@
+engine: pdflatex        # pdflatex | xelatex | lualatex
+main: main.tex          # LaTeX entry point
+output_dir: build/
+runs: 2                 # compilation passes (for TOC, refs)
+bibliography: false     # run bibtex/biber after first pass
+draft: false
+fail_on_warning: false
+artifacts:
+  - build/*.pdf
