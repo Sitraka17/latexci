@@ -15,6 +15,7 @@ import (
 	"github.com/sitrakaforler/latexci/internal/config"
 	"github.com/sitrakaforler/latexci/internal/report"
 	"github.com/sitrakaforler/latexci/internal/watcher"
+	"github.com/sitrakaforler/latexci/internal/web"
 )
 
 // Set via -ldflags at build time.
@@ -53,6 +54,8 @@ func main() {
 		newCmd(),
 		openCmd(),
 		doctorCmd(),
+		webCmd(),
+		deployCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -372,7 +375,7 @@ func runDoctor(cfg *config.Config) []checkResult {
 	}
 
 	// 3. LaTeX engine
-	engines := []string{cfg.Engine, "pdflatex", "xelatex", "lualatex"}
+	engines := []string{cfg.Engine, "tectonic", "pdflatex", "xelatex", "lualatex"}
 	seen := map[string]bool{}
 	for _, e := range engines {
 		if seen[e] {
@@ -441,6 +444,70 @@ func colorCheckRed(s string) string {
 		return s
 	}
 	return "\033[31m" + s + "\033[0m"
+}
+
+// ---------- web ----------
+
+func webCmd() *cobra.Command {
+	var theme string
+	var toc bool
+	var selfContained bool
+	var title string
+
+	cmd := &cobra.Command{
+		Use:   "web",
+		Short: "Convert the LaTeX project to a self-contained HTML website",
+		Long: `Converts your LaTeX document to a styled HTML website using pandoc.
+The output lands in <output_dir>/index.html, ready to publish on GitHub Pages.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Converting %s → HTML ...\n", cfg.Main)
+			outPath, err := web.Build(web.Options{
+				Main:          cfg.Main,
+				OutputDir:     cfg.OutputDir,
+				Title:         title,
+				Theme:         theme,
+				TOC:           toc,
+				SelfContained: selfContained,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Printf("\n✓  Website built: %s\n", outPath)
+			fmt.Println(web.DeployInstructions(cfg.OutputDir, ""))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&theme, "theme", "light", "CSS theme: light | dark | academic")
+	cmd.Flags().BoolVar(&toc, "toc", true, "include table of contents")
+	cmd.Flags().BoolVar(&selfContained, "self-contained", false, "embed all assets (single portable HTML file)")
+	cmd.Flags().StringVar(&title, "title", "", "override document title")
+	return cmd
+}
+
+// ---------- deploy ----------
+
+func deployCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "deploy",
+		Short: "Write the GitHub Actions workflow that publishes your site to GitHub Pages",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := web.WriteGitHubPagesWorkflow("."); err != nil {
+				return fmt.Errorf("writing workflow: %w", err)
+			}
+			fmt.Println("✓  Created .github/workflows/pages.yml")
+			fmt.Println()
+			fmt.Println("Next steps:")
+			fmt.Println("  1. git add .github && git commit -m 'add GitHub Pages deploy'")
+			fmt.Println("  2. git push")
+			fmt.Println("  3. Go to your repo → Settings → Pages → Source: GitHub Actions")
+			fmt.Println("  4. Your site will be live at https://<user>.github.io/<repo>/")
+			return nil
+		},
+	}
 }
 
 // ---------- helpers ----------
