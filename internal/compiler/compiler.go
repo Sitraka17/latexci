@@ -72,14 +72,14 @@ func (c *Compiler) Build(rep *report.Report) error {
 func (c *Compiler) resolveEngine() (string, error) {
 	engine := c.cfg.Engine
 	if engine == "" {
-		// Auto-detect: prefer xelatex > pdflatex > lualatex.
-		for _, e := range []string{"xelatex", "pdflatex", "lualatex"} {
+		// Auto-detect: tectonic first (self-contained), then classic engines.
+		for _, e := range []string{"tectonic", "xelatex", "pdflatex", "lualatex"} {
 			if _, err := exec.LookPath(e); err == nil {
 				slog.Info("auto-detected engine", "engine", e)
 				return e, nil
 			}
 		}
-		return "", fmt.Errorf("no LaTeX engine found in PATH (tried xelatex, pdflatex, lualatex)")
+		return "", fmt.Errorf("no LaTeX engine found in PATH (tried tectonic, xelatex, pdflatex, lualatex)")
 	}
 	if _, err := exec.LookPath(engine); err != nil {
 		return "", fmt.Errorf("engine %q not found in PATH: %w", engine, err)
@@ -87,16 +87,30 @@ func (c *Compiler) resolveEngine() (string, error) {
 	return engine, nil
 }
 
+func (c *Compiler) isTectonic(engine string) bool {
+	return filepath.Base(engine) == "tectonic"
+}
+
 func (c *Compiler) runEngine(engine string, pass int, rep *report.Report) error {
-	args := []string{
-		"-interaction=nonstopmode",
-		"-halt-on-error=false",
-		fmt.Sprintf("-output-directory=%s", c.cfg.OutputDir),
+	var args []string
+	if c.isTectonic(engine) {
+		// Tectonic uses a different CLI: tectonic [flags] <file>
+		args = []string{"--outdir", c.cfg.OutputDir}
+		if c.cfg.Draft {
+			args = append(args, "--only-cached") // closest tectonic equivalent
+		}
+		args = append(args, c.cfg.Main)
+	} else {
+		args = []string{
+			"-interaction=nonstopmode",
+			"-halt-on-error=false",
+			fmt.Sprintf("-output-directory=%s", c.cfg.OutputDir),
+		}
+		if c.cfg.Draft {
+			args = append(args, "-draftmode")
+		}
+		args = append(args, c.cfg.Main)
 	}
-	if c.cfg.Draft {
-		args = append(args, "-draftmode")
-	}
-	args = append(args, c.cfg.Main)
 
 	cmd := exec.Command(engine, args...)
 	cmd.Dir = "."

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -13,19 +15,25 @@ import (
 	"github.com/sitrakaforler/latexci/internal/config"
 	"github.com/sitrakaforler/latexci/internal/report"
 	"github.com/sitrakaforler/latexci/internal/watcher"
+	"github.com/sitrakaforler/latexci/internal/web"
 )
 
+// Set via -ldflags at build time.
+var version = "dev"
+
 var (
-	cfgFile      string
-	reportFlag   bool
-	verboseFlag  bool
+	cfgFile     string
+	reportFlag  bool
+	verboseFlag bool
 )
 
 func main() {
 	root := &cobra.Command{
-		Use:   "latexci",
-		Short: "Minimalist CI/CD pipeline for LaTeX projects",
-		Long:  "latexci compiles LaTeX projects with structured error reporting and GitHub Actions support.",
+		Use:          "latexci",
+		Short:        "Minimalist CI/CD pipeline for LaTeX projects",
+		Long:         "latexci compiles LaTeX projects with structured error reporting and GitHub Actions support.",
+		Version:      version,
+		SilenceUsage: true, // don't print usage on runtime errors
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			level := slog.LevelInfo
 			if verboseFlag {
@@ -43,6 +51,11 @@ func main() {
 		watchCmd(),
 		cleanCmd(),
 		initCmd(),
+		newCmd(),
+		openCmd(),
+		doctorCmd(),
+		webCmd(),
+		deployCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -102,8 +115,6 @@ func runBuild(cfg *config.Config) (*report.Report, int) {
 	case rep.Errors > 0:
 		return rep, 1
 	case rep.Warnings > 0 && cfg.FailOnWarning:
-		return rep, 2
-	case rep.Warnings > 0:
 		return rep, 2
 	default:
 		return rep, 0
@@ -188,6 +199,312 @@ func initCmd() *cobra.Command {
 				return err
 			}
 			fmt.Printf("created %s\n", config.DefaultConfigFile)
+			fmt.Println("tip: run 'latexci new' to also create a starter main.tex")
+			return nil
+		},
+	}
+}
+
+// ---------- new ----------
+
+func newCmd() *cobra.Command {
+	var engine string
+	cmd := &cobra.Command{
+		Use:   "new [directory]",
+		Short: "Scaffold a complete LaTeX project (main.tex + .latexci.yml)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir := "."
+			if len(args) == 1 {
+				dir = args[0]
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					return fmt.Errorf("creating directory %q: %w", dir, err)
+				}
+			}
+
+			cfgPath := filepath.Join(dir, config.DefaultConfigFile)
+			if err := config.ScaffoldWithEngine(cfgPath, engine); err != nil {
+				return err
+			}
+
+			texPath := filepath.Join(dir, "main.tex")
+			if _, err := os.Stat(texPath); err == nil {
+				fmt.Printf("  exists   %s (skipped)\n", texPath)
+			} else {
+				if err := os.WriteFile(texPath, []byte(starterTeX(engine)), 0o644); err != nil {
+					return fmt.Errorf("writing %s: %w", texPath, err)
+				}
+				fmt.Printf("  created  %s\n", texPath)
+			}
+			fmt.Printf("  created  %s\n", cfgPath)
+			fmt.Printf("\nready — run: latexci build\n")
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&engine, "engine", "e", "pdflatex", "LaTeX engine: pdflatex | xelatex | lualatex")
+	return cmd
+}
+
+func starterTeX(engine string) string {
+	fontPkg := ""
+	if engine == "xelatex" || engine == "lualatex" {
+		fontPkg = "\n\\usepackage{fontspec}"
+	}
+	return fmt.Sprintf(`\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}%s
+\usepackage{hyperref}
+
+\title{My Document}
+\author{Author}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+Hello, \LaTeX!
+
+\end{document}
+`, fontPkg)
+}
+
+// ---------- open ----------
+
+func openCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "open",
+		Short: "Open the compiled PDF with the system viewer",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			pdf := compiler.OutputPath(cfg)
+			if _, err := os.Stat(pdf); err != nil {
+				return fmt.Errorf("PDF not found at %q — run 'latexci build' first", pdf)
+			}
+			return openPDF(pdf)
+		},
+	}
+}
+
+func openPDF(path string) error {
+	var openCmd string
+	switch runtime.GOOS {
+	case "darwin":
+		openCmd = "open"
+	case "linux":
+		openCmd = "xdg-open"
+	case "windows":
+		openCmd = "start"
+	default:
+		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+	}
+	cmd := exec.Command(openCmd, path)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// ---------- doctor ----------
+
+type checkResult struct {
+	label  string
+	ok     bool
+	detail string
+}
+
+func doctorCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor",
+		Short: "Check that your environment is ready to compile LaTeX",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, _ := loadConfig()
+			checks := runDoctor(cfg)
+
+			allOK := true
+			for _, c := range checks {
+				icon := "✓"
+				if !c.ok {
+					icon = "✗"
+					allOK = false
+				}
+				colored := colorCheck(icon, c.ok)
+				if c.detail != "" {
+					fmt.Printf("  %s  %-30s %s\n", colored, c.label, c.detail)
+				} else {
+					fmt.Printf("  %s  %s\n", colored, c.label)
+				}
+			}
+			fmt.Println()
+			if allOK {
+				fmt.Println(colorCheckGreen("All checks passed — ready to compile."))
+			} else {
+				fmt.Println(colorCheckRed("Some checks failed. Fix the issues above, then run 'latexci build'."))
+				return fmt.Errorf("environment not ready")
+			}
+			return nil
+		},
+	}
+}
+
+func runDoctor(cfg *config.Config) []checkResult {
+	var results []checkResult
+
+	add := func(label string, ok bool, detail string) {
+		results = append(results, checkResult{label, ok, detail})
+	}
+
+	// 1. Config file
+	_, cfgErr := os.Stat(cfgFile)
+	if cfgErr == nil {
+		add(".latexci.yml present", true, cfgFile)
+	} else {
+		add(".latexci.yml present", false, "run 'latexci init' to create one")
+	}
+
+	// 2. Main .tex file
+	_, texErr := os.Stat(cfg.Main)
+	if texErr == nil {
+		add("main file exists", true, cfg.Main)
+	} else {
+		add("main file exists", false, fmt.Sprintf("%q not found — run 'latexci new'", cfg.Main))
+	}
+
+	// 3. LaTeX engine
+	engines := []string{cfg.Engine, "tectonic", "pdflatex", "xelatex", "lualatex"}
+	seen := map[string]bool{}
+	for _, e := range engines {
+		if seen[e] {
+			continue
+		}
+		seen[e] = true
+		if p, err := exec.LookPath(e); err == nil {
+			add(fmt.Sprintf("engine %s", e), true, p)
+		} else {
+			add(fmt.Sprintf("engine %s", e), false, "not found in PATH")
+		}
+	}
+
+	// 4. biber / bibtex (only if bibliography enabled)
+	if cfg.Bibliography {
+		if p, err := exec.LookPath("biber"); err == nil {
+			add("biber (bibliography)", true, p)
+		} else if p, err := exec.LookPath("bibtex"); err == nil {
+			add("bibtex (bibliography)", true, p)
+		} else {
+			add("biber/bibtex (bibliography)", false, "install texlive-bibtex-extra or biber")
+		}
+	}
+
+	// 5. Output dir writable
+	outDir := cfg.OutputDir
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		add("output dir writable", false, fmt.Sprintf("cannot create %q: %v", outDir, err))
+	} else {
+		add("output dir writable", true, outDir)
+	}
+
+	// 6. Disk space (warn if < 100 MB free in current dir)
+	if free, err := diskFreeBytes("."); err == nil {
+		mb := free / 1024 / 1024
+		if mb < 100 {
+			add("disk space", false, fmt.Sprintf("only %d MB free — LaTeX build artifacts can be large", mb))
+		} else {
+			add("disk space", true, fmt.Sprintf("%d MB free", mb))
+		}
+	}
+
+	return results
+}
+
+func colorCheck(icon string, ok bool) string {
+	noColor := os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb"
+	if noColor {
+		return icon
+	}
+	if ok {
+		return "\033[32m" + icon + "\033[0m"
+	}
+	return "\033[31m" + icon + "\033[0m"
+}
+
+func colorCheckGreen(s string) string {
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+		return s
+	}
+	return "\033[32m" + s + "\033[0m"
+}
+
+func colorCheckRed(s string) string {
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+		return s
+	}
+	return "\033[31m" + s + "\033[0m"
+}
+
+// ---------- web ----------
+
+func webCmd() *cobra.Command {
+	var theme string
+	var toc bool
+	var selfContained bool
+	var title string
+
+	cmd := &cobra.Command{
+		Use:   "web",
+		Short: "Convert the LaTeX project to a self-contained HTML website",
+		Long: `Converts your LaTeX document to a styled HTML website using pandoc.
+The output lands in <output_dir>/index.html, ready to publish on GitHub Pages.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Converting %s → HTML ...\n", cfg.Main)
+			outPath, err := web.Build(web.Options{
+				Main:          cfg.Main,
+				OutputDir:     cfg.OutputDir,
+				Title:         title,
+				Theme:         theme,
+				TOC:           toc,
+				SelfContained: selfContained,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Printf("\n✓  Website built: %s\n", outPath)
+			fmt.Println(web.DeployInstructions(cfg.OutputDir, ""))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&theme, "theme", "light", "CSS theme: light | dark | academic")
+	cmd.Flags().BoolVar(&toc, "toc", true, "include table of contents")
+	cmd.Flags().BoolVar(&selfContained, "self-contained", false, "embed all assets (single portable HTML file)")
+	cmd.Flags().StringVar(&title, "title", "", "override document title")
+	return cmd
+}
+
+// ---------- deploy ----------
+
+func deployCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "deploy",
+		Short: "Write the GitHub Actions workflow that publishes your site to GitHub Pages",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := web.WriteGitHubPagesWorkflow("."); err != nil {
+				return fmt.Errorf("writing workflow: %w", err)
+			}
+			fmt.Println("✓  Created .github/workflows/pages.yml")
+			fmt.Println()
+			fmt.Println("Next steps:")
+			fmt.Println("  1. git add .github && git commit -m 'add GitHub Pages deploy'")
+			fmt.Println("  2. git push")
+			fmt.Println("  3. Go to your repo → Settings → Pages → Source: GitHub Actions")
+			fmt.Println("  4. Your site will be live at https://<user>.github.io/<repo>/")
 			return nil
 		},
 	}

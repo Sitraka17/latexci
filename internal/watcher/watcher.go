@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -94,5 +95,12 @@ func addDirs(w *fsnotify.Watcher, root string) error {
 }
 
 func printDivider(label string) {
-	fmt.Printf("\n\033[36m━━━ %s ━━━\033[0m\n\n", label)
+	ts := time.Now().Format("15:04:05")
+	noColor := os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb"
+	line := strings.Repeat("─", 40)
+	if noColor {
+		fmt.Printf("\n[%s] %s %s\n\n", ts, label, line)
+	} else {
+		fmt.Printf("\n\033[36m[%s] %s %s\033[0m\n\n", ts, label, line)
+	}
 }
