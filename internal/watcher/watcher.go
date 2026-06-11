@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -22,9 +23,9 @@ var WatchedExts = map[string]bool{
 // BuildFn is called each time a watched file changes.
 type BuildFn func() error
 
-// Watch starts watching the current directory tree and calls build on changes.
-// It blocks until ctx is done or a fatal watcher error occurs.
-func Watch(root string, build BuildFn, log *slog.Logger) error {
+// Watch starts watching the directory tree rooted at root and calls build on changes.
+// It blocks until ctx is cancelled or a fatal watcher error occurs.
+func Watch(ctx context.Context, root string, build BuildFn, log *slog.Logger) error {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("creating watcher: %w", err)
@@ -48,6 +49,13 @@ func Watch(root string, build BuildFn, log *slog.Logger) error {
 
 	for {
 		select {
+		case <-ctx.Done():
+			if debounce != nil {
+				debounce.Stop()
+			}
+			log.Info("watch stopped")
+			return nil
+
 		case event, ok := <-w.Events:
 			if !ok {
 				return nil

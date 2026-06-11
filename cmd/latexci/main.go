@@ -5,9 +5,11 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -85,9 +87,15 @@ func buildCmd() *cobra.Command {
 				}
 			}
 
-			// Write GitHub Actions step summary if running in CI.
+			// Append to the GitHub Actions step summary if running in CI
+			// (the file may already hold output from earlier steps).
 			if summaryPath := os.Getenv("GITHUB_STEP_SUMMARY"); summaryPath != "" {
-				_ = os.WriteFile(summaryPath, []byte(rep.GitHubSummary()), 0o644)
+				if f, err := os.OpenFile(summaryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+					_, _ = f.WriteString(rep.GitHubSummary())
+					_ = f.Close()
+				} else {
+					slog.Warn("could not write step summary", "err", err)
+				}
 			}
 
 			os.Exit(exitCode)
@@ -132,9 +140,14 @@ func watchCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return watcher.Watch(".", func() error {
-				rep, _ := runBuild(cfg)
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return watcher.Watch(ctx, ".", func() error {
+				rep, exitCode := runBuild(cfg)
 				rep.Print()
+				if exitCode != 0 {
+					return fmt.Errorf("build failed (exit %d)", exitCode)
+				}
 				return nil
 			}, slog.Default())
 		},

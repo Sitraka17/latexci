@@ -24,16 +24,16 @@ type LaTeXError struct {
 }
 
 type Report struct {
-	Status      Status       `json:"status"`
-	Engine      string       `json:"engine"`
-	Passes      int          `json:"passes"`
-	DurationMs  int64        `json:"duration_ms"`
-	Warnings    int          `json:"warnings"`
-	Errors      int          `json:"errors"`
-	Pages       int          `json:"pages"`
-	Output      string       `json:"output"`
-	Details     []LaTeXError `json:"details,omitempty"`
-	startedAt   time.Time
+	Status     Status       `json:"status"`
+	Engine     string       `json:"engine"`
+	Passes     int          `json:"passes"`
+	DurationMs int64        `json:"duration_ms"`
+	Warnings   int          `json:"warnings"`
+	Errors     int          `json:"errors"`
+	Pages      int          `json:"pages"`
+	Output     string       `json:"output"`
+	Details    []LaTeXError `json:"details,omitempty"`
+	startedAt  time.Time
 }
 
 func New(engine string) *Report {

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -17,6 +18,7 @@ type Config struct {
 	Bibliography   bool     `yaml:"bibliography"`
 	Draft          bool     `yaml:"draft"`
 	FailOnWarning  bool     `yaml:"fail_on_warning"`
+	TimeoutSeconds int      `yaml:"timeout"` // max seconds per engine pass (0 = no limit)
 	Artifacts      []string `yaml:"artifacts"`
 }
 
@@ -29,6 +31,7 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config %q: %w", path, err)
 	}
+	cfg.applyEnv()
 	cfg.applyDefaults()
 	return &cfg, nil
 }
@@ -36,8 +39,43 @@ func Load(path string) (*Config, error) {
 // Defaults returns a Config with all defaults applied.
 func Defaults() *Config {
 	c := &Config{}
+	c.applyEnv()
 	c.applyDefaults()
 	return c
+}
+
+// applyEnv overrides config values from LATEXCI_* environment variables.
+// This is how the GitHub Action passes its inputs to the CLI.
+func (c *Config) applyEnv() {
+	if v := os.Getenv("LATEXCI_ENGINE"); v != "" {
+		c.Engine = v
+	}
+	if v := os.Getenv("LATEXCI_MAIN"); v != "" {
+		c.Main = v
+	}
+	if v := os.Getenv("LATEXCI_OUTPUT_DIR"); v != "" {
+		c.OutputDir = v
+	}
+	if v := os.Getenv("LATEXCI_RUNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.Runs = n
+		}
+	}
+	if v := os.Getenv("LATEXCI_FAIL_ON_WARNING"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			c.FailOnWarning = b
+		}
+	}
+	if v := os.Getenv("LATEXCI_BIBLIOGRAPHY"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			c.Bibliography = b
+		}
+	}
+	if v := os.Getenv("LATEXCI_TIMEOUT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.TimeoutSeconds = n
+		}
+	}
 }
 
 func (c *Config) applyDefaults() {
@@ -70,6 +108,7 @@ runs: 2                 # compilation passes (for TOC, refs)
 bibliography: false     # run bibtex/biber after first pass
 draft: false
 fail_on_warning: false
+timeout: 0              # max seconds per compilation pass (0 = no limit)
 artifacts:
   - build/*.pdf
 `, engine)

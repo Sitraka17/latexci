@@ -13,12 +13,12 @@ import (
 
 // Options controls HTML generation.
 type Options struct {
-	Main      string // source .tex file
-	OutputDir string // where to write build/
-	Title     string // overrides extracted title
-	Theme     string // "light" | "dark" | "academic"
-	TOC       bool   // include table of contents
-	SelfContained bool // embed all assets in single HTML file
+	Main          string // source .tex file
+	OutputDir     string // where to write build/
+	Title         string // overrides extracted title
+	Theme         string // "light" | "dark" | "academic"
+	TOC           bool   // include table of contents
+	SelfContained bool   // embed all assets in single HTML file
 }
 
 // Build converts the LaTeX source to HTML.
@@ -43,7 +43,9 @@ func Build(opts Options) (string, error) {
 	if _, err := cssFile.WriteString(themeCSS(opts.Theme)); err != nil {
 		return "", fmt.Errorf("writing css: %w", err)
 	}
-	cssFile.Close()
+	if err := cssFile.Close(); err != nil {
+		return "", fmt.Errorf("closing temp css: %w", err)
+	}
 
 	outPath := filepath.Join(filepath.Clean(opts.OutputDir), "index.html")
 
@@ -53,8 +55,8 @@ func Build(opts Options) (string, error) {
 		"--to", "html5",
 		"--output", outPath,
 		"--css", cssFile.Name(),
-		"--mathjax",                       // render math via MathJax CDN
-		"--syntax-highlighting", "pygments",
+		"--mathjax", // render math via MathJax CDN
+		"--highlight-style", "pygments",
 		"--metadata", "lang=en",
 	}
 	if opts.TOC {
@@ -324,7 +326,7 @@ jobs:
           sudo mv pandoc-*/bin/pandoc /usr/local/bin/
 
       - name: Install latexci
-        run: go install github.com/Sitraka17/latexci/cmd/latexci@latest
+        run: go install github.com/sitrakaforler/latexci/cmd/latexci@latest
 
       - name: Build website
         run: latexci web --toc --theme academic
