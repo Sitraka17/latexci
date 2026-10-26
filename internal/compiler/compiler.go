@@ -2,6 +2,8 @@ package compiler
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sitrakaforler/latexci/internal/config"
 	"github.com/sitrakaforler/latexci/internal/report"
@@ -72,14 +75,14 @@ func (c *Compiler) Build(rep *report.Report) error {
 func (c *Compiler) resolveEngine() (string, error) {
 	engine := c.cfg.Engine
 	if engine == "" {
-		// Auto-detect: prefer xelatex > pdflatex > lualatex.
-		for _, e := range []string{"xelatex", "pdflatex", "lualatex"} {
+		// Auto-detect: tectonic first (self-contained), then classic engines.
+		for _, e := range []string{"tectonic", "xelatex", "pdflatex", "lualatex"} {
 			if _, err := exec.LookPath(e); err == nil {
 				slog.Info("auto-detected engine", "engine", e)
 				return e, nil
 			}
 		}
-		return "", fmt.Errorf("no LaTeX engine found in PATH (tried xelatex, pdflatex, lualatex)")
+		return "", fmt.Errorf("no LaTeX engine found in PATH (tried tectonic, xelatex, pdflatex, lualatex)")
 	}
 	if _, err := exec.LookPath(engine); err != nil {
 		return "", fmt.Errorf("engine %q not found in PATH: %w", engine, err)
@@ -87,18 +90,38 @@ func (c *Compiler) resolveEngine() (string, error) {
 	return engine, nil
 }
 
-func (c *Compiler) runEngine(engine string, pass int, rep *report.Report) error {
-	args := []string{
-		"-interaction=nonstopmode",
-		"-halt-on-error=false",
-		fmt.Sprintf("-output-directory=%s", c.cfg.OutputDir),
-	}
-	if c.cfg.Draft {
-		args = append(args, "-draftmode")
-	}
-	args = append(args, c.cfg.Main)
+func (c *Compiler) isTectonic(engine string) bool {
+	return filepath.Base(engine) == "tectonic"
+}
 
-	cmd := exec.Command(engine, args...)
+func (c *Compiler) runEngine(engine string, pass int, rep *report.Report) error {
+	var args []string
+	if c.isTectonic(engine) {
+		// Tectonic uses a different CLI: tectonic [flags] <file>
+		args = []string{"--outdir", c.cfg.OutputDir}
+		if c.cfg.Draft {
+			args = append(args, "--only-cached") // closest tectonic equivalent
+		}
+		args = append(args, c.cfg.Main)
+	} else {
+		args = []string{
+			"-interaction=nonstopmode",
+			"-halt-on-error=false",
+			fmt.Sprintf("-output-directory=%s", c.cfg.OutputDir),
+		}
+		if c.cfg.Draft {
+			args = append(args, "-draftmode")
+		}
+		args = append(args, c.cfg.Main)
+	}
+
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if c.cfg.TimeoutSeconds > 0 {
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(c.cfg.TimeoutSeconds)*time.Second)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(ctx, engine, args...)
 	cmd.Dir = "."
 
 	stdout, err := cmd.StdoutPipe()
@@ -124,13 +147,23 @@ func (c *Compiler) runEngine(engine string, pass int, rep *report.Report) error 
 		// Extract page count from final pass.
 		if pass == c.cfg.Runs {
 			if m := rePages.FindStringSubmatch(line); m != nil {
-				rep.Pages, _ = strconv.Atoi(m[1])
+				if pages, err := strconv.Atoi(m[1]); err == nil {
+					rep.Pages = pages
+				} else {
+					c.log.Debug("unparseable page count", "value", m[1], "err", err)
+				}
 			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		c.log.Warn("reading engine output", "err", err)
 	}
 	_ = stdout.Close()
 
 	if err := cmd.Wait(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("engine %s timed out after %ds (raise 'timeout' in .latexci.yml)", engine, c.cfg.TimeoutSeconds)
+		}
 		// LaTeX exits non-zero even with recoverable errors; we inspect the log.
 		c.log.Warn("engine exited with error", "engine", engine, "err", err)
 	}
@@ -143,7 +176,7 @@ func (c *Compiler) runBibliography() error {
 	if _, err := exec.LookPath(tool); err != nil {
 		tool = "bibtex"
 	}
-	base := strings.TrimSuffix(c.cfg.Main, ".tex")
+	base := strings.TrimSuffix(filepath.Base(c.cfg.Main), ".tex")
 	auxPath := filepath.Join(c.cfg.OutputDir, base)
 	cmd := exec.Command(tool, auxPath)
 	cmd.Stdout = os.Stdout
@@ -207,7 +240,10 @@ func parseLogReader(r io.Reader, rep *report.Report) error {
 		// Flush pending error when we see the line reference.
 		if pendingError != "" {
 			if m := reLine.FindStringSubmatch(line); m != nil {
-				lineNo, _ := strconv.Atoi(m[1])
+				lineNo, convErr := strconv.Atoi(m[1])
+				if convErr != nil {
+					lineNo = 0 // keep the error, just without a line number
+				}
 				addDetail("error", currentFile, lineNo, pendingError)
 				pendingError = ""
 				continue
@@ -220,8 +256,8 @@ func parseLogReader(r io.Reader, rep *report.Report) error {
 		}
 
 		if m := reOverfull.FindStringSubmatch(line); m != nil {
-			pts, _ := strconv.ParseFloat(m[1], 64)
-			if pts > 10 {
+			pts, convErr := strconv.ParseFloat(m[1], 64)
+			if convErr == nil && pts > 10 {
 				addDetail("overfull", currentFile, 0, fmt.Sprintf("Overfull \\hbox (%.1fpt too wide)", pts))
 			}
 			continue

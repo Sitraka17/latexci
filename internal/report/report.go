@@ -24,16 +24,16 @@ type LaTeXError struct {
 }
 
 type Report struct {
-	Status      Status       `json:"status"`
-	Engine      string       `json:"engine"`
-	Passes      int          `json:"passes"`
-	DurationMs  int64        `json:"duration_ms"`
-	Warnings    int          `json:"warnings"`
-	Errors      int          `json:"errors"`
-	Pages       int          `json:"pages"`
-	Output      string       `json:"output"`
-	Details     []LaTeXError `json:"details,omitempty"`
-	startedAt   time.Time
+	Status     Status       `json:"status"`
+	Engine     string       `json:"engine"`
+	Passes     int          `json:"passes"`
+	DurationMs int64        `json:"duration_ms"`
+	Warnings   int          `json:"warnings"`
+	Errors     int          `json:"errors"`
+	Pages      int          `json:"pages"`
+	Output     string       `json:"output"`
+	Details    []LaTeXError `json:"details,omitempty"`
+	startedAt  time.Time
 }
 
 func New(engine string) *Report {
@@ -115,9 +115,26 @@ func (r *Report) GitHubSummary() string {
 	return sb.String()
 }
 
-func colorRed(s string) string    { return "\033[31m" + s + "\033[0m" }
-func colorGreen(s string) string  { return "\033[32m" + s + "\033[0m" }
-func colorYellow(s string) string { return "\033[33m" + s + "\033[0m" }
+func noColor() bool { return os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" }
+
+func colorRed(s string) string {
+	if noColor() {
+		return s
+	}
+	return "\033[31m" + s + "\033[0m"
+}
+func colorGreen(s string) string {
+	if noColor() {
+		return s
+	}
+	return "\033[32m" + s + "\033[0m"
+}
+func colorYellow(s string) string {
+	if noColor() {
+		return s
+	}
+	return "\033[33m" + s + "\033[0m"
+}
 
 func countColored(n int, color func(string) string) string {
 	s := fmt.Sprintf("%d", n)
